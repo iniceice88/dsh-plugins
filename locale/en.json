@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Firefly",
+    "description": "Windows notifications when a task finishes or waits for you, taskbar progress while it runs, and Up/Down history in the composer. Both features switch on and off in Settings.",
+    "detail": "README.md"
+  }
+}

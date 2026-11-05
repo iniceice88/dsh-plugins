@@ -1,0 +1,57 @@
+{
+  "name": "dsh-firefly",
+  "version": "1.0.0",
+  "description": "Windows task alerts and taskbar progress, plus Up/Down composer history, for the DeepSeek Harness desktop app — each feature switchable from Settings.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "desktop",
+    "windows",
+    "toast",
+    "notification",
+    "taskbar",
+    "composer",
+    "history"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "helper/taskbar.ps1",
+    "locale/*.json",
+    "icon.svg",
+    "assets/*.png",
+    "README.md",
+    "README.zh.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.9.0"
+  }
+}

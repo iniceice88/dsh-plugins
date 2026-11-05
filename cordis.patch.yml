@@ -1,0 +1,7 @@
+# dsh-firefly bundle patch: one Host row. The browser half is declared by
+# package.json `dsh.client` and loaded as a client module of the same name.
+# Both features live in this single row; each one is switched on and off from
+# Settings → General instead of by disabling the row.
+- insert:
+    - id: firefly
+      name: 'dsh-firefly'
