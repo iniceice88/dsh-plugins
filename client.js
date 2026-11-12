@@ -4,7 +4,7 @@
  * One client module carries the plugin's three browser concerns, all of which
  * read the same two feature switches:
  *
- * 1. **Desktop alerts** — subscribes to the Host's `/api/firefly.events`
+ * 1. **Desktop alerts** — subscribes to the Host's `/firefly/events`
  *    Server-Sent Events route and raises a Windows toast while the window is
  *    minimized, hidden, or simply not focused. Clicking a toast asks the Host
  *    to restore and foreground the Electron window.
@@ -34,7 +34,7 @@ window.__ModuleLoader__.load({
     /* routes and slots                                                    */
     /* ------------------------------------------------------------------ */
 
-    const EVENTS_ROUTE = 'api/firefly.events'
+    const EVENTS_ROUTE = 'firefly/events'
     const FOCUS_ROUTE = 'api/firefly.focus'
     const SETTINGS_ROUTE = 'api/firefly.settings'
     /** The Host pings every 25s; a silent stream this long is treated as dead. */
@@ -972,6 +972,14 @@ window.__ModuleLoader__.load({
           const transport = globalThis.__DSH_TRANSPORT__
           if (transport !== undefined && transport !== null && typeof transport.fetch === 'function') {
             await followWithFetch(transport.fetch.bind(transport), signal)
+            return
+          }
+          // Stream over plain fetch when the page can. The desktop page runs on
+          // its own `dsh-app://app/` scheme, where `EventSource` refuses a
+          // non-HTTP URL, while `fetch` goes through the shell's protocol
+          // bridge — the same carrier the settings route already uses.
+          if (typeof fetch === 'function') {
+            await followWithFetch((input, init) => fetch(input, init), signal)
             return
           }
           followWithEventSource(signal)

@@ -119,8 +119,8 @@ profile 的 `cordis.patch.yml` 里可以给这一行写入默认值：
 
 ```
 Host 半 (index.js)                            Client 半 (client.js)
-  agent/status ─────────┐                       ┌─ SSE /api/firefly.events ─→ 失焦时弹通知
-  approval/request ─────┼─ /api/firefly.events  │
+  agent/status ─────────┐                       ┌─ SSE /firefly/events ─→ 失焦时弹通知
+  approval/request ─────┼─ /firefly/events      │
   user-questions/request┘                       ├─ 设置 → 通用 两行 ─→ POST /api/firefly.settings
   taskbar ─→ helper/taskbar.ps1 (ITaskbarList3) │
   开关 ─→ <DSH_HOME>/firefly/settings.json      └─ conversation.input.left ─→ ↑/↓ 历史
@@ -129,10 +129,14 @@ Host 半 (index.js)                            Client 半 (client.js)
 - **Host 半**跑在 DSH 的普通 Node 进程里，没有 `BrowserWindow`，所以任务栏按钮是按 Electron 主进程（Host 的父进程）
   的窗口句柄来定位的。`helper/taskbar.ps1` 每次状态切换启动一次（约 0.6–1.5 秒），调用
   `ITaskbarList3::SetProgressState` 或恢复窗口，然后退出，不常驻。
+- 事件流是顶层的 `webServer` 路由（`/firefly/events`），**不是** `/api` Fetch 路由。共享的 `/api` 通道在桌面端更新
+  安装前会 Drain 所有在途响应；挂在 `/api` 上的无限流会让 Drain 一直等到 10 秒期限，导致每次更新都失败。和 DSH 自己
+  的 `/plugins/events` 一样，顶层路由不进这个准入集合，代价是要自己用 loopback 检查代替 `/api` 的 Cookie 鉴权。
 - `approval/request` 与 `user-questions/request` 是 waterfall 事件：谁先返回谁认领，后面的监听器不再执行。控制器 UI
   注册得比任何 profile 插件都早，所以 Firefly 的监听器用 `prepend` 排在链首，观察后立即 `next()` 交给 UI。
-- **Client 半**订阅 Host 的 SSE（走 shell 传输，退化为 `EventSource`），25 秒心跳，70 秒无数据自动重连。它渲染设置
-  里的两行，并按 Host 报告的开关放行两项功能——以 Host 为唯一真相，开关和实际行为不会各说各话。
+- **Client 半**用 `fetch` 流式读取该路由（外壳提供 `fetch` 时走外壳），只有 `fetch` 不可用时才退化为 `EventSource`；
+  25 秒心跳，70 秒无数据自动重连。它渲染设置里的两行，并按 Host 报告的开关放行两项功能——以 Host 为唯一真相，开关和
+  实际行为不会各说各话。
 
 ## 调试
 

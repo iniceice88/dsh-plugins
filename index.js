@@ -5,9 +5,14 @@
  * which the browser can switch off on its own:
  *
  * 1. **Alerts** — an indeterminate taskbar progress bar while any agent runs,
- *    and a Server-Sent Events frame on `/api/firefly.events` that the browser
- *    half turns into a Windows toast when the window is not in front of the
- *    user.
+ *    and a Server-Sent Events frame on `/firefly/events` that the browser half
+ *    turns into a Windows toast when the window is not in front of the user.
+ *
+ *    That stream is served by a top-level Web route rather than the shared
+ *    `/api` Fetch channel on purpose: `/api` drains every in-flight response
+ *    before a desktop update is allowed to install, so a response that only
+ *    ends with the page would hold the install until its deadline. See
+ *    {@link EVENTS_PATH}.
  * 2. **Composer history** — implemented entirely by the browser half; this half
  *    only carries the shared on/off state so both halves agree on it.
  *
@@ -33,12 +38,29 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'firefly'
-export const inject = ['connection']
+export const inject = ['connection', 'webServer']
 
-/** Absolute routes the Host registers; the browser addresses them document-relative. */
-const EVENTS_ROUTE = '/api/firefly.events'
+/**
+ * Absolute routes the Host registers; the browser addresses them document-relative.
+ *
+ * The event stream is a plain `webServer` route, not a `/api` Fetch route. The
+ * shared `/api` channel drains every admitted response before a desktop update
+ * may install; a response that stays open for the life of the page would hold
+ * that drain until its deadline and make every install fail with
+ * "desktop update: task inspection timed out". Top-level Web routes are not
+ * part of that admission set — DSH's own long-lived `/plugins/events` stream is
+ * registered the same way.
+ */
+const EVENTS_PATH = '/firefly/events'
 const FOCUS_ROUTE = '/api/firefly.focus'
 const SETTINGS_ROUTE = '/api/firefly.settings'
+
+/** Headers of one SSE response. */
+const EVENT_HEADERS = {
+  'content-type': 'text/event-stream; charset=utf-8',
+  'cache-control': 'no-cache, no-transform',
+  'x-accel-buffering': 'no',
+}
 
 const HELPER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'helper', 'taskbar.ps1')
 
@@ -98,9 +120,35 @@ function jsonResponse(body, status = 200) {
   })
 }
 
+/** Whether a socket address is loopback (IPv4, IPv6, or IPv4-mapped IPv6). */
+function isLoopbackAddress(address) {
+  if (typeof address !== 'string' || address === '') return false
+  const plain = address.startsWith('::ffff:') ? address.slice(7) : address
+  return plain === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(plain)
+}
+
+/** Whether the `Host` header names a loopback authority. */
+function isLoopbackHost(host) {
+  const value = String(host ?? '').trim().toLowerCase()
+  if (value === '') return false
+  const hostname = value.startsWith('[') ? value.slice(1, value.indexOf(']')) : value.split(':', 1)[0]
+  return hostname === 'localhost' || hostname === '::1' || isLoopbackAddress(hostname)
+}
+
+/**
+ * Refuse non-loopback callers of the event stream.
+ *
+ * The stream is not an authenticated `/api` route — that is what keeps it out
+ * of the update drain — so it performs the loopback fence itself. A browser
+ * reaches the Host directly on 127.0.0.1; the desktop carrier proxies to the
+ * same authority, so both keep a loopback `Host` and socket.
+ */
+function allowsEventsRequest(request) {
+  return isLoopbackAddress(request.socket?.remoteAddress) && isLoopbackHost(request.headers?.host)
+}
+
 export function apply(ctx, config = {}) {
   const options = { ...DEFAULTS, ...(config ?? {}) }
-  const encoder = new TextEncoder()
   /** SSE writers for connected pages. */
   const subscribers = new Set()
   /** Cleanup for every open SSE response, so a plugin unload closes the pages' streams. */
@@ -165,16 +213,19 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  /** Open one SSE response body and register its writer. */
-  function openEventStream(request) {
-    let controller = null
+  /** Open one SSE response on the raw Web route and register its writer. */
+  function openEventStream(request, response) {
+    response.writeHead(200, EVENT_HEADERS)
+    response.flushHeaders?.()
+    request.socket?.setNoDelay?.(true)
+
     let heartbeat = null
     let closed = false
 
     const send = (text) => {
-      if (closed || controller === null) return false
+      if (closed || response.writableEnded === true || response.destroyed === true) return false
       try {
-        controller.enqueue(encoder.encode(text))
+        response.write(text)
         return true
       } catch {
         return false
@@ -191,42 +242,48 @@ export function apply(ctx, config = {}) {
       subscribers.delete(send)
       streamStops.delete(stop)
       try {
-        controller?.close()
+        response.end()
       } catch {
         /* already closed by the carrier */
       }
     }
 
-    return new ReadableStream({
-      start(streamController) {
-        controller = streamController
-        subscribers.add(send)
-        streamStops.add(stop)
-        send(': connected\n\n')
-        send(`data: ${JSON.stringify({ kind: 'settings', ...pickFeatures(features), at: Date.now() })}\n\n`)
-        heartbeat = setInterval(() => {
-          if (!send(': ping\n\n')) stop()
-        }, 25000)
-        request.signal?.addEventListener('abort', stop, { once: true })
-      },
-      cancel() {
-        stop()
-      },
-    })
+    subscribers.add(send)
+    streamStops.add(stop)
+    send(': connected\n\n')
+    send(`data: ${JSON.stringify({ kind: 'settings', ...pickFeatures(features), at: Date.now() })}\n\n`)
+    heartbeat = setInterval(() => {
+      if (!send(': ping\n\n')) stop()
+    }, 25000)
+    heartbeat.unref?.()
+    request.on('close', stop)
+    request.on('error', stop)
+    response.on('close', stop)
+    response.on('error', stop)
   }
 
+  /** Top-level Web route for the event stream; never part of the `/api` drain. */
   const eventsRoute = {
-    path: EVENTS_ROUTE,
-    methods: ['GET'],
-    requestBody: 'buffered',
-    fetch: async (request) =>
-      new Response(openEventStream(request), {
-        headers: {
-          'content-type': 'text/event-stream; charset=utf-8',
-          'cache-control': 'no-cache, no-transform',
-          'x-accel-buffering': 'no',
-        },
-      }),
+    kind: 'exact',
+    path: EVENTS_PATH,
+    handler: (request, response) => {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405, { allow: 'GET, HEAD' })
+        response.end()
+        return
+      }
+      if (!allowsEventsRequest(request)) {
+        response.writeHead(403)
+        response.end()
+        return
+      }
+      if (request.method === 'HEAD') {
+        response.writeHead(200, EVENT_HEADERS)
+        response.end()
+        return
+      }
+      openEventStream(request, response)
+    },
   }
 
   const focusRoute = {
@@ -369,7 +426,7 @@ export function apply(ctx, config = {}) {
     true,
   )
 
-  ctx.effect(() => ctx.connection.fetch.register(eventsRoute), 'firefly: events route')
+  ctx.effect(() => ctx.webServer.register(eventsRoute), 'firefly: events route')
   ctx.effect(() => ctx.connection.fetch.register(focusRoute), 'firefly: focus route')
   ctx.effect(() => ctx.connection.fetch.register(settingsRoute), 'firefly: settings route')
 

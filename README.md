@@ -126,8 +126,8 @@ saved file wins over the row config. The remaining keys stay under the patch.
 
 ```
 Host half (index.js)                          Client half (client.js)
-  agent/status ─────────┐                       ┌─ SSE /api/firefly.events ─→ toast when unfocused
-  approval/request ─────┼─ /api/firefly.events  │
+  agent/status ─────────┐                       ┌─ SSE /firefly/events ─→ toast when unfocused
+  approval/request ─────┼─ /firefly/events      │
   user-questions/request┘                       ├─ Settings → General rows ─→ POST /api/firefly.settings
   taskbar ─→ helper/taskbar.ps1 (ITaskbarList3) │
   switches ─→ <DSH_HOME>/firefly/settings.json  └─ conversation.input.left ─→ ↑/↓ history
@@ -137,13 +137,17 @@ Host half (index.js)                          Client half (client.js)
   the window handle of the Electron main process (the Host's parent process). `helper/taskbar.ps1` starts once per state
   change (about 0.6–1.5 s), calls `ITaskbarList3::SetProgressState` or restores the window, and exits. It never stays
   resident.
+- The event stream is a top-level `webServer` route (`/firefly/events`), not a `/api` Fetch route. The shared `/api`
+  channel drains every in-flight response before a desktop update may install, so an endless `/api` stream would hold
+  that drain until its 10 s deadline and fail every install. Like DSH's own `/plugins/events`, a top-level route stays
+  out of that admission set; it fences itself to loopback callers instead of the `/api` cookie.
 - `approval/request` and `user-questions/request` are waterfalls: the first listener that returns claims the request and
   the rest never run. The controller UI registers before any profile plugin, so Firefly's observers are prepended and
   always delegate with `next()`.
-- The **Client half** subscribes to the Host's SSE route (through the shell transport, falling back to `EventSource`),
-  keeps a 25 s heartbeat and reconnects after 70 s of silence. It renders the two Settings rows, and it gates both
-  features on the switches the Host reports — the Host is the one source of truth, so the switches and the actual
-  behaviour can never disagree.
+- The **Client half** streams the route with `fetch` (through the shell transport when one provides `fetch`), falling
+  back to `EventSource` only when `fetch` is unavailable; it keeps a 25 s heartbeat and reconnects after 70 s of silence.
+  It renders the two Settings rows, and it gates both features on the switches the Host reports — the Host is the one
+  source of truth, so the switches and the actual behaviour can never disagree.
 
 ## Debugging
 
